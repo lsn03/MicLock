@@ -1,26 +1,48 @@
 import CoreAudio
 import Foundation
 
+enum DeviceTransport {
+    case builtIn, bluetooth, usb, aggregate, virtual, other
+
+    var sfSymbol: String {
+        switch self {
+        case .builtIn:   return "laptopcomputer"
+        case .bluetooth: return "wave.3.right"
+        case .usb:       return "cable.connector"
+        case .aggregate: return "square.stack.3d.up"
+        case .virtual:   return "waveform"
+        case .other:     return "dot.radiowaves.left.and.right"
+        }
+    }
+}
+
 struct AudioDevice: Equatable {
     let id: AudioDeviceID
     let uid: String
     let name: String
+    let transport: DeviceTransport
 }
 
 final class AudioController {
-    private let defaultsKey = "lockedInputUID"
+    private let lockedKey   = "lockedInputUID"
+    private let enabledKey  = "lockEnabled"
     private let queue = DispatchQueue(label: "MicLock.audio")
 
     var onDevicesChanged: (() -> Void)?
 
     private(set) var lockedUID: String? {
-        didSet { UserDefaults.standard.set(lockedUID, forKey: defaultsKey) }
+        didSet { UserDefaults.standard.set(lockedUID, forKey: lockedKey) }
+    }
+
+    private(set) var lockEnabled: Bool {
+        didSet { UserDefaults.standard.set(lockEnabled, forKey: enabledKey) }
     }
 
     init() {
-        self.lockedUID = UserDefaults.standard.string(forKey: defaultsKey)
+        self.lockedUID   = UserDefaults.standard.string(forKey: lockedKey)
+        let d = UserDefaults.standard
+        self.lockEnabled = d.object(forKey: enabledKey) as? Bool ?? true
         installListeners()
-        // Enforce once at launch in case current default differs.
         enforce()
     }
 
@@ -30,8 +52,17 @@ final class AudioController {
         allDevices().filter { isInput(deviceID: $0.id) }
     }
 
+    func outputDevices() -> [AudioDevice] {
+        allDevices().filter { isOutput(deviceID: $0.id) }
+    }
+
     func currentDefaultInputUID() -> String? {
         guard let id = currentDefaultInputID() else { return nil }
+        return uid(forDevice: id)
+    }
+
+    func currentDefaultOutputUID() -> String? {
+        guard let id = currentDefaultOutputID() else { return nil }
         return uid(forDevice: id)
     }
 
@@ -40,17 +71,27 @@ final class AudioController {
         enforce()
     }
 
+    func setLockEnabled(_ on: Bool) {
+        lockEnabled = on
+        if on { enforce() }
+    }
+
+    func setDefaultOutput(uid: String) {
+        guard let id = deviceID(forUID: uid) else { return }
+        setDefaultOutput(id)
+    }
+
     // MARK: - Enforcement
 
     private func enforce() {
-        guard let want = lockedUID else { return }
+        guard lockEnabled, let want = lockedUID else { return }
         guard let id = deviceID(forUID: want) else { return }
         if currentDefaultInputID() != id {
             setDefaultInput(id)
         }
     }
 
-    // MARK: - CoreAudio helpers
+    // MARK: - Device enumeration
 
     private func allDevices() -> [AudioDevice] {
         var size: UInt32 = 0
@@ -69,14 +110,14 @@ final class AudioController {
         guard status == noErr else { return [] }
         return ids.compactMap { id -> AudioDevice? in
             guard let u = uid(forDevice: id), let n = name(forDevice: id) else { return nil }
-            return AudioDevice(id: id, uid: u, name: n)
+            return AudioDevice(id: id, uid: u, name: n, transport: transport(forDevice: id))
         }
     }
 
-    private func isInput(deviceID: AudioDeviceID) -> Bool {
+    private func hasStreams(_ deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Bool {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: kAudioDevicePropertyScopeInput,
+            mScope: scope,
             mElement: kAudioObjectPropertyElementMain
         )
         var size: UInt32 = 0
@@ -91,6 +132,14 @@ final class AudioController {
         let list = UnsafeMutableAudioBufferListPointer(abl)
         for b in list { if b.mNumberChannels > 0 { return true } }
         return false
+    }
+
+    private func isInput(deviceID: AudioDeviceID) -> Bool {
+        hasStreams(deviceID, scope: kAudioDevicePropertyScopeInput)
+    }
+
+    private func isOutput(deviceID: AudioDeviceID) -> Bool {
+        hasStreams(deviceID, scope: kAudioDevicePropertyScopeOutput)
     }
 
     private func uid(forDevice id: AudioDeviceID) -> String? {
@@ -127,13 +176,41 @@ final class AudioController {
         return cfStr as String
     }
 
+    private func transport(forDevice id: AudioDeviceID) -> DeviceTransport {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value)
+        guard status == noErr else { return .other }
+        switch value {
+        case kAudioDeviceTransportTypeBuiltIn: return .builtIn
+        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: return .bluetooth
+        case kAudioDeviceTransportTypeUSB: return .usb
+        case kAudioDeviceTransportTypeAggregate: return .aggregate
+        case kAudioDeviceTransportTypeVirtual: return .virtual
+        default: return .other
+        }
+    }
+
     private func deviceID(forUID targetUID: String) -> AudioDeviceID? {
         allDevices().first { $0.uid == targetUID }?.id
     }
 
-    private func currentDefaultInputID() -> AudioDeviceID? {
+    // MARK: - Defaults get/set
+
+    private func currentDefaultInputID()  -> AudioDeviceID? { defaultDevice(.input) }
+    private func currentDefaultOutputID() -> AudioDeviceID? { defaultDevice(.output) }
+
+    private enum DefaultKind { case input, output }
+    private func defaultDevice(_ kind: DefaultKind) -> AudioDeviceID? {
         var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mSelector: kind == .input
+                ? kAudioHardwarePropertyDefaultInputDevice
+                : kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
@@ -144,9 +221,14 @@ final class AudioController {
         return status == noErr ? id : nil
     }
 
-    private func setDefaultInput(_ id: AudioDeviceID) {
+    private func setDefaultInput(_ id: AudioDeviceID)  { setDefault(id, kind: .input) }
+    private func setDefaultOutput(_ id: AudioDeviceID) { setDefault(id, kind: .output) }
+
+    private func setDefault(_ id: AudioDeviceID, kind: DefaultKind) {
         var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mSelector: kind == .input
+                ? kAudioHardwarePropertyDefaultInputDevice
+                : kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
@@ -161,7 +243,8 @@ final class AudioController {
     private func installListeners() {
         let selectors: [AudioObjectPropertySelector] = [
             kAudioHardwarePropertyDevices,
-            kAudioHardwarePropertyDefaultInputDevice
+            kAudioHardwarePropertyDefaultInputDevice,
+            kAudioHardwarePropertyDefaultOutputDevice
         ]
         for sel in selectors {
             var addr = AudioObjectPropertyAddress(
@@ -173,7 +256,6 @@ final class AudioController {
                 AudioObjectID(kAudioObjectSystemObject), &addr, queue
             ) { [weak self] _, _ in
                 guard let self = self else { return }
-                // Give the system a moment to settle before re-asserting.
                 self.queue.asyncAfter(deadline: .now() + 0.2) {
                     self.enforce()
                     DispatchQueue.main.async { self.onDevicesChanged?() }

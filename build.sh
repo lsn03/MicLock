@@ -23,6 +23,8 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RES_DIR"
 cp "$BIN" "$MACOS_DIR/$APP_NAME"
 cp "Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
+cp "Resources/AppIcon.icns"          "$RES_DIR/AppIcon.icns"
+cp "Resources/MicLockTemplate.pdf"   "$RES_DIR/MicLockTemplate.pdf"
 
 # Ad-hoc sign so launchd / SMAppService / tcc are happy.
 codesign --force --deep --sign - "$APP_DIR"

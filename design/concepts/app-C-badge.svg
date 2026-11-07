@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3a3c"/>
+      <stop offset="1" stop-color="#0a0a0a"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="url(#bg)"/>
+
+  <!-- Mic, hero element, upper-left -->
+  <rect x="220" y="170" width="240" height="400" rx="120" fill="white"/>
+  <path d="M 160 420 A 180 180 0 0 0 520 420" stroke="white" stroke-width="44" fill="none" stroke-linecap="round"/>
+  <path d="M 340 600 L 340 710" stroke="white" stroke-width="44" stroke-linecap="round"/>
+  <path d="M 240 735 L 440 735" stroke="white" stroke-width="44" stroke-linecap="round"/>
+
+  <!-- Padlock, accent, lower-right (classical proportions: wider than tall body) -->
+  <path d="M 680 640 V 560 A 80 80 0 0 1 840 560 V 640"
+        stroke="#FFC800" stroke-width="40" fill="none" stroke-linecap="round"/>
+  <rect x="640" y="640" width="240" height="200" rx="28" fill="#FFC800"/>
+  <circle cx="760" cy="725" r="20" fill="#0a0a0a"/>
+  <rect x="750" y="736" width="20" height="56" rx="4" fill="#0a0a0a"/>
+</svg>

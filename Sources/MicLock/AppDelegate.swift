@@ -1,31 +1,61 @@
 import AppKit
 import ServiceManagement
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
+    private let menu = NSMenu()
     private let audio = AudioController()
+    private var autoCloseTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(
-                systemSymbolName: "mic.fill",
-                accessibilityDescription: "MicLock"
-            )
+            if let url = Bundle.main.url(forResource: "MicLockTemplate", withExtension: "pdf"),
+               let img = NSImage(contentsOf: url) {
+                img.size = NSSize(width: 18, height: 18)
+                img.isTemplate = true
+                button.image = img
+            } else {
+                button.image = NSImage(
+                    systemSymbolName: "mic.fill",
+                    accessibilityDescription: "MicLock"
+                )
+            }
         }
+        menu.delegate = self
+        statusItem.menu = menu
         rebuildMenu()
         audio.onDevicesChanged = { [weak self] in self?.rebuildMenu() }
     }
 
-    @objc private func selectDevice(_ sender: NSMenuItem) {
-        guard let uid = sender.representedObject as? String else { return }
-        if audio.lockedUID == uid {
-            audio.setLocked(uid: nil)
-        } else {
-            audio.setLocked(uid: uid)
-        }
+    // MARK: - NSMenuDelegate
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
         rebuildMenu()
     }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        restartAutoCloseTimer()
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        autoCloseTimer?.invalidate()
+        autoCloseTimer = nil
+    }
+
+    // MARK: - Device click (from DeviceRowView)
+
+    private func handleDeviceClick(uid: String) {
+        audio.setLocked(uid: uid)
+        if Settings.shared.keepMenuOpenAfterSelection {
+            restartAutoCloseTimer()
+            DispatchQueue.main.async { [weak self] in self?.rebuildMenu() }
+        } else {
+            menu.cancelTracking()
+        }
+    }
+
+    // MARK: - Actions
 
     @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {
         let service = SMAppService.mainApp
@@ -38,7 +68,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             NSLog("MicLock: launch-at-login toggle failed: \(error)")
         }
-        rebuildMenu()
     }
 
     @objc private func openSoundSettings() {
@@ -50,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
         let credits = NSAttributedString(
-            string: "Locks your macOS default input device so connecting Bluetooth or USB audio never hijacks your microphone.\n\nMade by Sergey · 2026",
+            string: "Locks your macOS default input device so connecting Bluetooth or USB audio never hijacks your microphone.\n\nMade by Lvov Sergei · 2026",
             attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: NSColor.labelColor
@@ -59,17 +88,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.orderFrontStandardAboutPanel(options: [
             .credits: credits,
             .applicationName: "MicLock",
-            .applicationVersion: "1.0.0",
-            .version: "1"
+            .applicationVersion: "1.0.1",
+            .version: "2"
         ])
     }
 
-    @objc private func quit() {
-        NSApp.terminate(nil)
+    @objc private func quit() { NSApp.terminate(nil) }
+
+    // MARK: - Auto-close
+
+    private func restartAutoCloseTimer() {
+        autoCloseTimer?.invalidate()
+        let seconds = Settings.shared.autoCloseSeconds
+        autoCloseTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            self?.menu.cancelTracking()
+        }
+        if let t = autoCloseTimer {
+            RunLoop.current.add(t, forMode: .eventTracking)
+        }
     }
 
+    // MARK: - Menu
+
     private func rebuildMenu() {
-        let menu = NSMenu()
+        menu.removeAllItems()
 
         let header = NSMenuItem(title: "Lock input device:", action: nil, keyEquivalent: "")
         header.isEnabled = false
@@ -84,17 +126,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(empty)
         } else {
             for d in devices {
-                let item = NSMenuItem(
-                    title: d.name,
-                    action: #selector(selectDevice(_:)),
-                    keyEquivalent: ""
-                )
-                item.target = self
-                item.representedObject = d.uid
-                if audio.lockedUID == d.uid { item.state = .on }
-                if d.uid == currentDefault {
-                    item.title = "\(d.name)  ◆"
+                let row = DeviceRowView(
+                    uid: d.uid,
+                    name: d.name,
+                    checked: audio.lockedUID == d.uid,
+                    isActiveDefault: d.uid == currentDefault
+                ) { [weak self] uid in
+                    self?.handleDeviceClick(uid: uid)
                 }
+                let item = NSMenuItem()
+                item.view = row
                 menu.addItem(item)
             }
         }
@@ -133,6 +174,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         soundItem.target = self
         menu.addItem(soundItem)
 
+        // Preferences submenu
+        let prefsItem = NSMenuItem(title: "Preferences", action: nil, keyEquivalent: "")
+        let prefs = NSMenu()
+        let keepOpenItem = NSMenuItem()
+        keepOpenItem.view = CheckboxRowView(
+            label: "Keep menu open after selection",
+            checked: Settings.shared.keepMenuOpenAfterSelection
+        ) { value in
+            Settings.shared.keepMenuOpenAfterSelection = value
+        }
+        prefs.addItem(keepOpenItem)
+        prefsItem.submenu = prefs
+        menu.addItem(prefsItem)
+
         menu.addItem(.separator())
 
         let aboutItem = NSMenuItem(
@@ -146,7 +201,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let quitItem = NSMenuItem(title: "Quit MicLock", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
-
-        self.statusItem.menu = menu
     }
 }
