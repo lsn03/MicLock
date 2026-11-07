@@ -1,5 +1,7 @@
 # MicLock
 
+**English** · [Русский](README.ru.md)
+
 A tiny menu-bar app for macOS that **locks your default microphone**.
 
 By default, macOS silently switches the system input to any newly-connected
